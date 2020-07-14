@@ -354,4 +354,26 @@ static inline void kvm_update_page_stats(struct kvm *kvm, int level, int count)
 {
 	atomic64_add(count, &kvm->stat.pages[level - 1]);
 }
+
+static inline gfn_t kvm_gfn_stolen_mask(struct kvm *kvm)
+{
+	/* Currently there are no stolen bits in KVM */
+	return 0;
+}
+
+static inline gpa_t kvm_gpa_stolen_mask(struct kvm *kvm)
+{
+	return kvm_gfn_stolen_mask(kvm) << PAGE_SHIFT;
+}
+
+static inline gpa_t kvm_gpa_unalias(struct kvm *kvm, gpa_t gpa)
+{
+	return gpa & ~kvm_gpa_stolen_mask(kvm);
+}
+
+static inline gfn_t kvm_gfn_unalias(struct kvm *kvm, gpa_t gpa)
+{
+	return kvm_gpa_unalias(kvm, gpa) >> PAGE_SHIFT;
+}
+
 #endif
