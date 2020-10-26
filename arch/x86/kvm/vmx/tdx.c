@@ -1716,6 +1716,8 @@ static int __tdx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t fastpath)
 		return tdx_handle_ept_violation(vcpu);
 	case EXIT_REASON_EPT_MISCONFIG:
 		return tdx_handle_ept_misconfig(vcpu);
+	case EXIT_REASON_TRIPLE_FAULT:
+		return tdx_handle_triple_fault(vcpu);
 	case EXIT_REASON_OTHER_SMI:
 		/*
 		 * Unlike VMX, all the SMI in SEAM non-root mode (i.e. when
