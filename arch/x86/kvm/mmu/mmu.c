@@ -651,7 +651,7 @@ static u64 __mmu_spte_clear_track_bits(struct kvm *kvm, u64 *sptep, u64 clear_va
 	 * kvm mmu, before reclaiming the page, we should
 	 * unmap it from mmu first.
 	 */
-	WARN_ON(!kvm_is_reserved_pfn(pfn) && !page_count(pfn_to_page(pfn)));
+//	WARN_ON(!kvm_is_reserved_pfn(pfn) && !page_count(pfn_to_page(pfn)));
 
 	if (is_accessed_spte(old_spte))
 		kvm_set_pfn_accessed(pfn);

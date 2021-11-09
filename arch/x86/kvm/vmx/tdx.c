@@ -1221,15 +1221,25 @@ static int tdx_map_gpa(struct kvm_vcpu *vcpu)
 {
 	gpa_t gpa = tdvmcall_p1_read(vcpu);
 	gpa_t size = tdvmcall_p2_read(vcpu);
+	bool shared = gpa & (vcpu->kvm->arch.gfn_shared_mask << PAGE_SHIFT);
 
 	if (!IS_ALIGNED(gpa, 4096) || !IS_ALIGNED(size, 4096) ||
 	    (gpa + size) < gpa ||
-	    (gpa + size) > vcpu->kvm->arch.gfn_shared_mask << (PAGE_SHIFT + 1))
+	    (gpa + size) > vcpu->kvm->arch.gfn_shared_mask << (PAGE_SHIFT + 1)) {
 		tdvmcall_set_return_code(vcpu, TDG_VP_VMCALL_INVALID_OPERAND);
-	else
-		tdvmcall_set_return_code(vcpu, TDG_VP_VMCALL_SUCCESS);
+		return 1;
+	}
 
-	return 1;
+	gpa &= ~(vcpu->kvm->arch.gfn_shared_mask << PAGE_SHIFT);
+	vcpu->run->exit_reason = KVM_EXIT_MEMORY_ERROR;
+	vcpu->run->memory.flags = shared ? 0 : KVM_MEMORY_EXIT_FLAG_PRIVATE;
+	vcpu->run->memory.padding = 0;
+	vcpu->run->memory.gpa = gpa;
+	vcpu->run->memory.size = size;
+
+	tdvmcall_set_return_code(vcpu, TDG_VP_VMCALL_SUCCESS);
+
+	return 0;
 }
 
 static int tdx_complete_vp_vmcall(struct kvm_vcpu *vcpu)
