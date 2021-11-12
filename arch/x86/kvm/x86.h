@@ -443,6 +443,11 @@ static inline void kvm_machine_check(void)
 #endif
 }
 
+static __always_inline bool kvm_tsc_immutable(struct kvm_vcpu *vcpu)
+{
+	return vcpu->kvm->arch.vm_type == KVM_X86_TDX_VM;
+}
+
 void kvm_load_guest_xsave_state(struct kvm_vcpu *vcpu);
 void kvm_load_host_xsave_state(struct kvm_vcpu *vcpu);
 int kvm_spec_ctrl_test_value(u64 value);
