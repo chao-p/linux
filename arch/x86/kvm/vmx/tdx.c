@@ -544,6 +544,8 @@ int tdx_vm_init(struct kvm *kvm)
 		tdx_add_td_page(&kvm_tdx->tdcs[i]);
 	}
 
+	spin_lock_init(&kvm_tdx->seamcall_lock);
+
 	/*
 	 * Note, TDH_MNG_INIT cannot be invoked here.  TDH_MNG_INIT requires a dedicated
 	 * ioctl() to define the configure CPUID values for the TD.
@@ -1234,8 +1236,8 @@ static void tdx_measure_page(struct kvm_tdx *kvm_tdx, hpa_t gpa)
 	}
 }
 
-static void tdx_sept_set_private_spte(struct kvm *kvm, gfn_t gfn,
-				      enum pg_level level, kvm_pfn_t pfn)
+static void __tdx_sept_set_private_spte(struct kvm *kvm, gfn_t gfn,
+					enum pg_level level, kvm_pfn_t pfn)
 {
 	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
 	hpa_t hpa = pfn << PAGE_SHIFT;
@@ -1262,6 +1264,15 @@ static void tdx_sept_set_private_spte(struct kvm *kvm, gfn_t gfn,
 		return;
 	}
 
+	/*
+	 * In case of TDP MMU, fault handler can run concurrently.  Note
+	 * 'source_pa' is a TD scope variable, meaning if there are multiple
+	 * threads reaching here with all needing to access 'source_pa', it
+	 * will break.  However fortunately this won't happen, because below
+	 * TDH_MEM_PAGE_ADD code path is only used when VM is being created
+	 * before it is running, using KVM_TDX_INIT_MEM_REGION ioctl (which
+	 * always uses vcpu 0's page table and protected by vcpu->mutex).
+	 */
 	WARN_ON(kvm_tdx->source_pa == INVALID_PAGE);
 	source_pa = kvm_tdx->source_pa & ~KVM_TDX_MEASURE_MEMORY_REGION;
 
@@ -1274,8 +1285,25 @@ static void tdx_sept_set_private_spte(struct kvm *kvm, gfn_t gfn,
 	kvm_tdx->source_pa = INVALID_PAGE;
 }
 
-static void tdx_sept_drop_private_spte(struct kvm *kvm, gfn_t gfn, enum pg_level level,
-				       kvm_pfn_t pfn)
+static void tdx_sept_set_private_spte(struct kvm *kvm, gfn_t gfn,
+				      enum pg_level level, kvm_pfn_t pfn)
+{
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
+
+	/*
+	 * Only TDP MMU needs to use spinlock, however for simplicity,
+	 * just always use spinlock for seamcall, regardless whether
+	 * legacy MMU or TDP MMU is being used.  For legacy MMU it
+	 * should not have noticeable performance impact since taking
+	 * spinlock w/o needing to wait should be fast.
+	 */
+	spin_lock(&kvm_tdx->seamcall_lock);
+	__tdx_sept_set_private_spte(kvm, gfn, level, pfn);
+	spin_unlock(&kvm_tdx->seamcall_lock);
+}
+
+static void __tdx_sept_drop_private_spte(struct kvm *kvm, gfn_t gfn, enum pg_level level,
+					kvm_pfn_t pfn)
 {
 	int tdx_level = pg_level_to_tdx_sept_level(level);
 	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
@@ -1309,8 +1337,19 @@ static void tdx_sept_drop_private_spte(struct kvm *kvm, gfn_t gfn, enum pg_level
 	put_page(pfn_to_page(pfn));
 }
 
-static int tdx_sept_link_private_sp(struct kvm *kvm, gfn_t gfn,
-				    enum pg_level level, void *sept_page)
+static void tdx_sept_drop_private_spte(struct kvm *kvm, gfn_t gfn, enum pg_level level,
+				       kvm_pfn_t pfn)
+{
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
+
+	/* See comment in tdx_sept_set_private_spte() */
+	spin_lock(&kvm_tdx->seamcall_lock);
+	__tdx_sept_drop_private_spte(kvm, gfn, level, pfn);
+	spin_unlock(&kvm_tdx->seamcall_lock);
+}
+
+static int __tdx_sept_link_private_sp(struct kvm *kvm, gfn_t gfn,
+				      enum pg_level level, void *sept_page)
 {
 	/*
 	 * level is the level of spet_page to be added.  The level of its
@@ -1333,7 +1372,22 @@ static int tdx_sept_link_private_sp(struct kvm *kvm, gfn_t gfn,
 	return 0;
 }
 
-static void tdx_sept_zap_private_spte(struct kvm *kvm, gfn_t gfn, enum pg_level level)
+static int tdx_sept_link_private_sp(struct kvm *kvm, gfn_t gfn,
+				    enum pg_level level, void *sept_page)
+{
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
+	int ret;
+
+	/* See comment in tdx_sept_set_private_spte() */
+	spin_lock(&kvm_tdx->seamcall_lock);
+	ret = __tdx_sept_link_private_sp(kvm, gfn, level, sept_page);
+	spin_unlock(&kvm_tdx->seamcall_lock);
+
+	return ret;
+}
+
+static void __tdx_sept_zap_private_spte(struct kvm *kvm, gfn_t gfn,
+					enum pg_level level)
 {
 	int tdx_level = pg_level_to_tdx_sept_level(level);
 	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
@@ -1346,7 +1400,19 @@ static void tdx_sept_zap_private_spte(struct kvm *kvm, gfn_t gfn, enum pg_level 
 		pr_tdx_error(TDH_MEM_RANGE_BLOCK, err, &ex_ret);
 }
 
-static void tdx_sept_unzap_private_spte(struct kvm *kvm, gfn_t gfn, enum pg_level level)
+static void tdx_sept_zap_private_spte(struct kvm *kvm, gfn_t gfn,
+				      enum pg_level level)
+{
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
+
+	/* See comment in tdx_sept_set_private_spte() */
+	spin_lock(&kvm_tdx->seamcall_lock);
+	__tdx_sept_zap_private_spte(kvm, gfn, level);
+	spin_unlock(&kvm_tdx->seamcall_lock);
+}
+
+static void __tdx_sept_unzap_private_spte(struct kvm *kvm, gfn_t gfn,
+					  enum pg_level level)
 {
 	int tdx_level = pg_level_to_tdx_sept_level(level);
 	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
@@ -1359,8 +1425,19 @@ static void tdx_sept_unzap_private_spte(struct kvm *kvm, gfn_t gfn, enum pg_leve
 		pr_tdx_error(TDH_MEM_RANGE_UNBLOCK, err, &ex_ret);
 }
 
-static int tdx_sept_free_private_sp(struct kvm *kvm, gfn_t gfn, enum pg_level level,
-				    void *sept_page)
+static void tdx_sept_unzap_private_spte(struct kvm *kvm, gfn_t gfn,
+					enum pg_level level)
+{
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
+
+	/* See comment in tdx_sept_set_private_spte() */
+	spin_lock(&kvm_tdx->seamcall_lock);
+	__tdx_sept_unzap_private_spte(kvm, gfn, level);
+	spin_unlock(&kvm_tdx->seamcall_lock);
+}
+
+static int __tdx_sept_free_private_sp(struct kvm *kvm, gfn_t gfn, enum pg_level level,
+				      void *sept_page)
 {
 	/*
 	 * free_private_sp() is (obviously) called when a shadow page is being
@@ -1370,6 +1447,20 @@ static int tdx_sept_free_private_sp(struct kvm *kvm, gfn_t gfn, enum pg_level le
 		return -EINVAL;
 
 	return tdx_reclaim_page((unsigned long)sept_page, __pa(sept_page));
+}
+
+static int tdx_sept_free_private_sp(struct kvm *kvm, gfn_t gfn, enum pg_level level,
+				    void *sept_page)
+{
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
+	int ret;
+
+	/* See comment in tdx_sept_set_private_spte() */
+	spin_lock(&kvm_tdx->seamcall_lock);
+	ret = __tdx_sept_free_private_sp(kvm, gfn, level, sept_page);
+	spin_unlock(&kvm_tdx->seamcall_lock);
+
+	return ret;
 }
 
 static int tdx_sept_tlb_remote_flush(struct kvm *kvm)
