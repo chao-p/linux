@@ -338,6 +338,16 @@ static void vt_enable_nmi_window(struct kvm_vcpu *vcpu)
 	vmx_enable_nmi_window(vcpu);
 }
 
+static void vt_setup_mce(struct kvm_vcpu *vcpu)
+{
+	if (is_td_vcpu(vcpu)) {
+		tdx_setup_mce(vcpu);
+		return;
+	}
+
+	vmx_setup_mce(vcpu);
+}
+
 static void vt_load_mmu_pgd(struct kvm_vcpu *vcpu, hpa_t root_hpa,
 			int pgd_level)
 {
@@ -589,7 +599,7 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 	.cancel_hv_timer = vmx_cancel_hv_timer,
 #endif
 
-	.setup_mce = vmx_setup_mce,
+	.setup_mce = vt_setup_mce,
 
 	.smi_allowed = vt_smi_allowed,
 	.enter_smm = vt_enter_smm,

@@ -1609,6 +1609,19 @@ void tdx_enable_smi_window(struct kvm_vcpu *vcpu)
 	vcpu->arch.smi_pending = false;
 }
 
+void tdx_setup_mce(struct kvm_vcpu *vcpu)
+{
+	/*
+	 * TDX doesn't support MCE.  Whatever value device model (e.g. qemu)
+	 * requests, ignore it and forcibly set it to no MCE bank.
+	 *
+	 * Because vm type KVM_CAP_MCE reports unsupported, the device model
+	 * shouldn't call KVM_SETUP_MCE.  This is a safe guard to prevent device
+	 * model from setting up MCE.
+	 */
+	vcpu->arch.mcg_cap = 0;
+}
+
 int tdx_dev_ioctl(void __user *argp)
 {
 	struct kvm_tdx_capabilities __user *user_caps;

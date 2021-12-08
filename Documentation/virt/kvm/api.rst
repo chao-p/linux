@@ -4248,7 +4248,7 @@ On failure, the guest will still be operating on its previous HPT.
 
 :Capability: KVM_CAP_MCE
 :Architectures: x86
-:Type: system ioctl
+:Type: system ioctl, vm ioctl
 :Parameters: u64 mce_cap (out)
 :Returns: 0 on success, -1 on error
 

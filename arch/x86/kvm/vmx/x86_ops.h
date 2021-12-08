@@ -63,6 +63,7 @@ void vmx_update_exception_bitmap(struct kvm_vcpu *vcpu);
 int vmx_get_msr_feature(struct kvm_msr_entry *msr);
 int vmx_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info);
 u64 vmx_get_segment_base(struct kvm_vcpu *vcpu, int seg);
+void tdx_setup_mce(struct kvm_vcpu *vcpu);
 void vmx_get_segment(struct kvm_vcpu *vcpu, struct kvm_segment *var, int seg);
 void vmx_set_segment(struct kvm_vcpu *vcpu, struct kvm_segment *var, int seg);
 int vmx_get_cpl(struct kvm_vcpu *vcpu);

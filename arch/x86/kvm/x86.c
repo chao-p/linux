@@ -4241,6 +4241,8 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		break;
 	case KVM_CAP_MCE:
 		r = KVM_MAX_MCE_BANKS;
+		if (kvm && kvm_mce_injection_disallowed(kvm))
+			r = 0;
 		break;
 	case KVM_CAP_XCRS:
 		r = boot_cpu_has(X86_FEATURE_XSAVE);
@@ -6307,6 +6309,19 @@ set_pit2_out:
 			kvm->arch.bsp_vcpu_id = arg;
 		mutex_unlock(&kvm->lock);
 		break;
+	case KVM_X86_GET_MCE_CAP_SUPPORTED: {
+		u64 mce_cap_supported;
+		r = -EFAULT;
+		if (kvm_mce_injection_disallowed(kvm))
+			mce_cap_supported = 0;
+		else
+			mce_cap_supported = kvm_mce_cap_supported;
+		if (copy_to_user(argp, &mce_cap_supported,
+				 sizeof(mce_cap_supported)))
+			goto out;
+		r = 0;
+		break;
+	}
 #ifdef CONFIG_KVM_XEN
 	case KVM_XEN_HVM_CONFIG: {
 		struct kvm_xen_hvm_config xhc;
