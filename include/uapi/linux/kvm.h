@@ -1188,7 +1188,8 @@ struct kvm_ppc_resize_hpt {
 #define KVM_CAP_EXIT_ON_EMULATION_FAILURE 204
 #define KVM_CAP_ARM_MTE 205
 #define KVM_CAP_VM_MOVE_ENC_CONTEXT_FROM 206
-#define KVM_CAP_VM_TYPES 207
+/* TODO: remove this workaround to avoid CAP number conflict in the upstream. */
+#define KVM_CAP_VM_TYPES 1000
 
 #ifdef KVM_CAP_IRQ_ROUTING
 
