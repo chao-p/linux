@@ -85,6 +85,14 @@ static int vt_mem_enc_op_dev(void __user *argp)
 	return tdx_dev_ioctl(argp);
 }
 
+static int vt_mem_enc_op(struct kvm *kvm, void __user *argp)
+{
+	if (!is_td(kvm))
+		return -ENOTTY;
+
+	return tdx_vm_ioctl(kvm, argp);
+}
+
 struct kvm_x86_ops vt_x86_ops __initdata = {
 	.name = "kvm_intel",
 
@@ -226,6 +234,7 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 	.vcpu_deliver_sipi_vector = kvm_vcpu_deliver_sipi_vector,
 
 	.mem_enc_op_dev = vt_mem_enc_op_dev,
+	.mem_enc_op = vt_mem_enc_op,
 };
 
 static struct kvm_x86_init_ops vt_init_ops __initdata = {
