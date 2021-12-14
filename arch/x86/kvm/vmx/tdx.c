@@ -279,6 +279,15 @@ int tdx_vm_init(struct kvm *kvm)
 	int ret, i;
 	u64 err;
 
+	/*
+	 * To generate EPT violation to inject #VE instead of EPT MISCONFIG,
+	 * set RWX=0.
+	 */
+	kvm_mmu_set_mmio_spte_mask(kvm, 0, VMX_EPT_RWX_MASK, 0);
+
+	/* TODO: Enable 2mb and 1gb large page support. */
+	kvm->arch.tdp_max_page_level = PG_LEVEL_4K;
+
 	/* vCPUs can't be created until after KVM_TDX_INIT_VM. */
 	kvm->max_vcpus = 0;
 
@@ -502,6 +511,186 @@ td_bugged:
 void tdx_load_mmu_pgd(struct kvm_vcpu *vcpu, hpa_t root_hpa, int pgd_level)
 {
 	td_vmcs_write64(to_tdx(vcpu), SHARED_EPT_POINTER, root_hpa & PAGE_MASK);
+}
+
+static void tdx_measure_page(struct kvm_tdx *kvm_tdx, hpa_t gpa)
+{
+	struct tdx_ex_ret ex_ret;
+	u64 err;
+	int i;
+
+	for (i = 0; i < PAGE_SIZE; i += TDX_EXTENDMR_CHUNKSIZE) {
+		err = tdh_mr_extend(kvm_tdx->tdr.pa, gpa + i, &ex_ret);
+		if (KVM_BUG_ON(err, &kvm_tdx->kvm)) {
+			pr_tdx_error(TDH_MR_EXTEND, err, &ex_ret);
+			break;
+		}
+	}
+}
+
+static void tdx_sept_set_private_spte(struct kvm *kvm, gfn_t gfn,
+				      enum pg_level level, kvm_pfn_t pfn)
+{
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
+	hpa_t hpa = pfn << PAGE_SHIFT;
+	gpa_t gpa = gfn << PAGE_SHIFT;
+	struct tdx_ex_ret ex_ret;
+	hpa_t source_pa;
+	u64 err;
+
+	if (WARN_ON_ONCE(is_error_noslot_pfn(pfn) || kvm_is_reserved_pfn(pfn)))
+		return;
+
+	/* TODO: handle large pages. */
+	if (KVM_BUG_ON(level != PG_LEVEL_4K, kvm))
+		return;
+
+	/* Pin the page, KVM doesn't yet support page migration. */
+	get_page(pfn_to_page(pfn));
+
+	/* Build-time faults are induced and handled via TDH_MEM_PAGE_ADD. */
+	if (is_td_finalized(kvm_tdx)) {
+		err = tdh_mem_page_aug(kvm_tdx->tdr.pa, gpa, hpa, &ex_ret);
+		if (KVM_BUG_ON(err, kvm))
+			pr_tdx_error(TDH_MEM_PAGE_AUG, err, &ex_ret);
+		return;
+	}
+
+	WARN_ON(kvm_tdx->source_pa == INVALID_PAGE);
+	source_pa = kvm_tdx->source_pa & ~KVM_TDX_MEASURE_MEMORY_REGION;
+
+	err = tdh_mem_page_add(kvm_tdx->tdr.pa, gpa, hpa, source_pa, &ex_ret);
+	if (KVM_BUG_ON(err, kvm))
+		pr_tdx_error(TDH_MEM_PAGE_ADD, err, &ex_ret);
+	else if ((kvm_tdx->source_pa & KVM_TDX_MEASURE_MEMORY_REGION))
+		tdx_measure_page(kvm_tdx, gpa);
+
+	kvm_tdx->source_pa = INVALID_PAGE;
+}
+
+static void tdx_sept_drop_private_spte(struct kvm *kvm, gfn_t gfn, enum pg_level level,
+				       kvm_pfn_t pfn)
+{
+	int tdx_level = pg_level_to_tdx_sept_level(level);
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
+	gpa_t gpa = gfn << PAGE_SHIFT;
+	hpa_t hpa = pfn << PAGE_SHIFT;
+	hpa_t hpa_with_hkid;
+	struct tdx_ex_ret ex_ret;
+	u64 err;
+
+	/* TODO: handle large pages. */
+	if (KVM_BUG_ON(level != PG_LEVEL_4K, kvm))
+		return;
+
+	if (is_hkid_assigned(kvm_tdx)) {
+		err = tdh_mem_page_remove(kvm_tdx->tdr.pa, gpa, tdx_level, &ex_ret);
+		if (KVM_BUG_ON(err, kvm)) {
+			pr_tdx_error(TDH_MEM_PAGE_REMOVE, err, &ex_ret);
+			return;
+		}
+
+		hpa_with_hkid = set_hkid_to_hpa(hpa, (u16)kvm_tdx->hkid);
+		err = tdh_phymem_page_wbinvd(hpa_with_hkid);
+		if (WARN_ON_ONCE(err)) {
+			pr_tdx_error(TDH_PHYMEM_PAGE_WBINVD, err, NULL);
+			return;
+		}
+	} else if (tdx_reclaim_page((unsigned long)__va(hpa), hpa)) {
+		return;
+	}
+
+	put_page(pfn_to_page(pfn));
+}
+
+static int tdx_sept_link_private_sp(struct kvm *kvm, gfn_t gfn,
+				    enum pg_level level, void *sept_page)
+{
+	/*
+	 * level is the level of spet_page to be added.  The level of its
+	 * parent's PTE entry is sp_level + 1.
+	 */
+	enum pg_level parent_pte_level = level + 1;
+	int tdx_level = pg_level_to_tdx_sept_level(parent_pte_level);
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
+	gpa_t gpa = gfn << PAGE_SHIFT;
+	hpa_t hpa = __pa(sept_page);
+	struct tdx_ex_ret ex_ret;
+	u64 err;
+
+	err = tdh_mem_sept_add(kvm_tdx->tdr.pa, gpa, tdx_level, hpa, &ex_ret);
+	if (KVM_BUG_ON(err, kvm)) {
+		pr_tdx_error(TDH_MEM_SEPT_ADD, err, &ex_ret);
+		return -EIO;
+	}
+
+	return 0;
+}
+
+static void tdx_sept_zap_private_spte(struct kvm *kvm, gfn_t gfn, enum pg_level level)
+{
+	int tdx_level = pg_level_to_tdx_sept_level(level);
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
+	gpa_t gpa = gfn << PAGE_SHIFT;
+	struct tdx_ex_ret ex_ret;
+	u64 err;
+
+	err = tdh_mem_range_block(kvm_tdx->tdr.pa, gpa, tdx_level, &ex_ret);
+	if (KVM_BUG_ON(err, kvm))
+		pr_tdx_error(TDH_MEM_RANGE_BLOCK, err, &ex_ret);
+}
+
+static void tdx_sept_unzap_private_spte(struct kvm *kvm, gfn_t gfn, enum pg_level level)
+{
+	int tdx_level = pg_level_to_tdx_sept_level(level);
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
+	gpa_t gpa = gfn << PAGE_SHIFT;
+	struct tdx_ex_ret ex_ret;
+	u64 err;
+
+	err = tdh_mem_range_unblock(kvm_tdx->tdr.pa, gpa, tdx_level, &ex_ret);
+	if (KVM_BUG_ON(err, kvm))
+		pr_tdx_error(TDH_MEM_RANGE_UNBLOCK, err, &ex_ret);
+}
+
+static int tdx_sept_free_private_sp(struct kvm *kvm, gfn_t gfn, enum pg_level level,
+				    void *sept_page)
+{
+	/*
+	 * free_private_sp() is (obviously) called when a shadow page is being
+	 * zapped.  KVM doesn't (yet) zap private SPs while the TD is active.
+	 */
+	if (KVM_BUG_ON(is_hkid_assigned(to_kvm_tdx(kvm)), kvm))
+		return -EINVAL;
+
+	return tdx_reclaim_page((unsigned long)sept_page, __pa(sept_page));
+}
+
+static int tdx_sept_tlb_remote_flush(struct kvm *kvm)
+{
+	struct kvm_tdx *kvm_tdx;
+	u64 err;
+
+	if (!is_td(kvm))
+		return -EOPNOTSUPP;
+
+	kvm_tdx = to_kvm_tdx(kvm);
+	if (!is_hkid_assigned(kvm_tdx))
+		return 0;
+
+	kvm_tdx->tdh_mem_track = true;
+
+	kvm_make_all_cpus_request(kvm, KVM_REQ_TLB_FLUSH);
+
+	if (is_hkid_assigned(kvm_tdx) && is_td_finalized(kvm_tdx)) {
+		err = tdh_mem_track(to_kvm_tdx(kvm)->tdr.pa);
+		if (KVM_BUG_ON(err, kvm))
+			pr_tdx_error(TDH_MEM_TRACK, err, NULL);
+	}
+
+	WRITE_ONCE(kvm_tdx->tdh_mem_track, false);
+
+	return 0;
 }
 
 int tdx_dev_ioctl(void __user *argp)
@@ -1003,6 +1192,14 @@ int __init tdx_hardware_setup(struct kvm_x86_ops *x86_ops)
 	if (!memcpy(tdx_caps.cpuid_configs, tdsysinfo->cpuid_configs,
 		    tdsysinfo->num_cpuid_config * sizeof(struct tdx_cpuid_config)))
 		return -EIO;
+
+	x86_ops->tlb_remote_flush = tdx_sept_tlb_remote_flush;
+	x86_ops->set_private_spte = tdx_sept_set_private_spte;
+	x86_ops->drop_private_spte = tdx_sept_drop_private_spte;
+	x86_ops->zap_private_spte = tdx_sept_zap_private_spte;
+	x86_ops->unzap_private_spte = tdx_sept_unzap_private_spte;
+	x86_ops->link_private_sp = tdx_sept_link_private_sp;
+	x86_ops->free_private_sp = tdx_sept_free_private_sp;
 
 	max_pkgs = topology_max_packages();
 	tdx_mng_key_config_lock = kcalloc(max_pkgs, sizeof(*tdx_mng_key_config_lock),
