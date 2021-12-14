@@ -129,6 +129,10 @@ int __init tdx_hardware_setup(struct kvm_x86_ops *x86_ops);
 void tdx_hardware_enable(void);
 void tdx_hardware_disable(void);
 
+int tdx_vm_init(struct kvm *kvm);
+void tdx_vm_teardown(struct kvm *kvm);
+void tdx_vm_free(struct kvm *kvm);
+
 int tdx_dev_ioctl(void __user *argp);
 
 #endif /* __KVM_X86_VMX_X86_OPS_H */
