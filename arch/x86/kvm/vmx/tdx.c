@@ -1038,6 +1038,35 @@ int tdx_deliver_posted_interrupt(struct kvm_vcpu *vcpu, int vector)
 	return 0;
 }
 
+static inline bool tdx_is_private_gpa(struct kvm *kvm, gpa_t gpa)
+{
+	return !((gpa >> PAGE_SHIFT) & kvm->arch.gfn_shared_mask);
+}
+
+#define TDX_SEPT_PFERR (PFERR_WRITE_MASK | PFERR_USER_MASK)
+
+static int tdx_handle_ept_violation(struct kvm_vcpu *vcpu)
+{
+	unsigned long exit_qual;
+
+	if (tdx_is_private_gpa(vcpu->kvm, tdexit_gpa(vcpu)))
+		exit_qual = TDX_SEPT_PFERR;
+	else
+		exit_qual = tdexit_exit_qual(vcpu);
+	trace_kvm_page_fault(tdexit_gpa(vcpu), exit_qual);
+	return __vmx_handle_ept_violation(vcpu, tdexit_gpa(vcpu), exit_qual);
+}
+
+static int tdx_handle_ept_misconfig(struct kvm_vcpu *vcpu)
+{
+	WARN_ON(1);
+
+	vcpu->run->exit_reason = KVM_EXIT_UNKNOWN;
+	vcpu->run->hw.hardware_exit_reason = EXIT_REASON_EPT_MISCONFIG;
+
+	return 0;
+}
+
 static int tdx_handle_bus_lock_vmexit(struct kvm_vcpu *vcpu)
 {
 	/*
@@ -1069,6 +1098,10 @@ static int __tdx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t fastpath)
 	WARN_ON_ONCE(fastpath != EXIT_FASTPATH_NONE);
 
 	switch (exit_reason.basic) {
+	case EXIT_REASON_EPT_VIOLATION:
+		return tdx_handle_ept_violation(vcpu);
+	case EXIT_REASON_EPT_MISCONFIG:
+		return tdx_handle_ept_misconfig(vcpu);
 	case EXIT_REASON_OTHER_SMI:
 		/*
 		 * If reach here, it's not a MSMI.
@@ -1409,13 +1442,6 @@ void tdx_flush_tlb(struct kvm_vcpu *vcpu)
 	while (READ_ONCE(kvm_tdx->tdh_mem_track))
 		cpu_relax();
 }
-
-static inline bool tdx_is_private_gpa(struct kvm *kvm, gpa_t gpa)
-{
-	return !((gpa >> PAGE_SHIFT) & kvm->arch.gfn_shared_mask);
-}
-
-#define TDX_SEPT_PFERR (PFERR_WRITE_MASK | PFERR_USER_MASK)
 
 static int tdx_init_mem_region(struct kvm *kvm, struct kvm_tdx_cmd *cmd)
 {
