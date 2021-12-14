@@ -5,6 +5,7 @@
 #include <linux/list.h>
 #include <linux/kvm_host.h>
 
+#include "posted_intr.h"
 #include "tdx_errno.h"
 #include "tdx_arch.h"
 #include "tdx_ops.h"
@@ -38,6 +39,9 @@ struct vcpu_tdx {
 
 	struct tdx_td_page tdvpr;
 	struct tdx_td_page *tdvpx;
+
+	/* Posted interrupt descriptor */
+	struct pi_desc pi_desc;
 };
 
 #define TDX_MAX_NR_CPUID_CONFIGS					\
