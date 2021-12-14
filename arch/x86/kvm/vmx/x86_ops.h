@@ -144,6 +144,7 @@ int tdx_handle_exit(struct kvm_vcpu *vcpu,
 
 void tdx_apicv_post_state_restore(struct kvm_vcpu *vcpu);
 int tdx_deliver_posted_interrupt(struct kvm_vcpu *vcpu, int vector);
+void tdx_inject_nmi(struct kvm_vcpu *vcpu);
 void tdx_get_exit_info(struct kvm_vcpu *vcpu, u32 *reason,
 		u64 *info1, u64 *info2, u32 *intr_info, u32 *error_code);
 bool tdx_is_emulated_msr(u32 index, bool write);
