@@ -53,6 +53,14 @@ static bool vt_is_vm_type_supported(unsigned long type)
 	return type == KVM_X86_DEFAULT_VM;
 }
 
+static int vt_mem_enc_op_dev(void __user *argp)
+{
+	if (!enable_tdx)
+		return -EOPNOTSUPP;
+
+	return tdx_dev_ioctl(argp);
+}
+
 struct kvm_x86_ops vt_x86_ops __initdata = {
 	.name = "kvm_intel",
 
@@ -190,6 +198,8 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 	.complete_emulated_msr = kvm_complete_insn_gp,
 
 	.vcpu_deliver_sipi_vector = kvm_vcpu_deliver_sipi_vector,
+
+	.mem_enc_op_dev = vt_mem_enc_op_dev,
 };
 
 static struct kvm_x86_init_ops vt_init_ops __initdata = {
