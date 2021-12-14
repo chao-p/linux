@@ -49,11 +49,12 @@ struct kvm_mmu_page {
 	 */
 	union kvm_mmu_page_role role;
 	gfn_t gfn;
-	gfn_t gfn_stolen_bits;
 
 	u64 *spt;
 	/* hold the gfn of each spte inside spt */
 	gfn_t *gfns;
+	/* associated private shadow page, e.g. SEPT page */
+	void *private_sp;
 	/* Currently serving as active root */
 	union {
 		int root_count;
@@ -103,6 +104,30 @@ static inline int kvm_mmu_role_as_id(union kvm_mmu_page_role role)
 static inline int kvm_mmu_page_as_id(struct kvm_mmu_page *sp)
 {
 	return kvm_mmu_role_as_id(sp->role);
+}
+
+static inline bool is_private_sp(struct kvm_mmu_page *sp)
+{
+	return sp->role.private;
+}
+
+static inline bool is_private_spte(u64 *sptep)
+{
+	return is_private_sp(sptep_to_sp(sptep));
+}
+
+static inline int __kvm_mmu_link_private_sp(struct kvm *kvm,
+					struct kvm_mmu_page *sp)
+{
+	return static_call(kvm_x86_link_private_sp)(
+		kvm, sp->gfn, sp->role.level, sp->private_sp);
+}
+
+static inline int __kvm_mmu_free_private_sp(struct kvm *kvm,
+					struct kvm_mmu_page *sp)
+{
+	return static_call(kvm_x86_free_private_sp)(
+		kvm, sp->gfn, sp->role.level, sp->private_sp);
 }
 
 static inline bool kvm_vcpu_ad_need_write_protect(struct kvm_vcpu *vcpu)
