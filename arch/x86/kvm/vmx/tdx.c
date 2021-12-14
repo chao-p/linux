@@ -5,11 +5,13 @@
 #include "capabilities.h"
 #include "tdx_errno.h"
 #include "tdx_ops.h"
+#include "vmx_ops.h"
 #include "x86_ops.h"
 #include "cpuid.h"
 #include "lapic.h"
 #include "mmu.h"
 #include "tdx.h"
+#include "vmx.h"
 
 #include <trace/events/kvm.h>
 #include "trace.h"
@@ -965,6 +967,21 @@ free_tdparams:
 	if (ret)
 		kvm_tdx->cpuid_nent = 0;
 	return ret;
+}
+
+void tdx_flush_tlb(struct kvm_vcpu *vcpu)
+{
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(vcpu->kvm);
+	struct kvm_mmu *mmu = vcpu->arch.mmu;
+	u64 root_hpa = mmu->root_hpa;
+
+	/* Flush the shared EPTP, if it's valid. */
+	if (VALID_PAGE(root_hpa))
+		ept_sync_context(construct_eptp(vcpu, root_hpa,
+						mmu->shadow_root_level));
+
+	while (READ_ONCE(kvm_tdx->tdh_mem_track))
+		cpu_relax();
 }
 
 static inline bool tdx_is_private_gpa(struct kvm *kvm, gpa_t gpa)
