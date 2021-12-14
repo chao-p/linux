@@ -10,6 +10,7 @@
 #include "tdx_ops.h"
 #include "vmx_ops.h"
 #include "x86_ops.h"
+#include "common.h"
 #include "cpuid.h"
 #include "lapic.h"
 #include "mmu.h"
@@ -767,6 +768,12 @@ fastpath_t tdx_vcpu_run(struct kvm_vcpu *vcpu)
 
 	trace_kvm_entry(vcpu);
 
+	if (pi_test_on(&tdx->pi_desc)) {
+		apic->send_IPI_self(POSTED_INTR_VECTOR);
+
+		kvm_wait_lapic_expire(vcpu, true);
+	}
+
 	tdx_vcpu_enter_exit(vcpu, tdx);
 
 	tdx_user_return_update_cache();
@@ -973,6 +980,22 @@ static int tdx_sept_tlb_remote_flush(struct kvm *kvm)
 
 	WRITE_ONCE(kvm_tdx->tdh_mem_track, false);
 
+	return 0;
+}
+
+void tdx_apicv_post_state_restore(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_tdx *tdx = to_tdx(vcpu);
+
+	pi_clear_on(&tdx->pi_desc);
+	memset(tdx->pi_desc.pir, 0, sizeof(tdx->pi_desc.pir));
+}
+
+int tdx_deliver_posted_interrupt(struct kvm_vcpu *vcpu, int vector)
+{
+	struct vcpu_tdx *tdx = to_tdx(vcpu);
+
+	__vmx_deliver_posted_interrupt(vcpu, &tdx->pi_desc, vector);
 	return 0;
 }
 
