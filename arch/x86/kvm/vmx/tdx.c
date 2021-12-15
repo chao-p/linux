@@ -1038,7 +1038,18 @@ int tdx_deliver_posted_interrupt(struct kvm_vcpu *vcpu, int vector)
 	return 0;
 }
 
-int tdx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t fastpath)
+static int tdx_handle_bus_lock_vmexit(struct kvm_vcpu *vcpu)
+{
+	/*
+	 * When EXIT_REASON_BUS_LOCK, bus_lock_detected bit is not necessarily
+	 * set.  Enforce the bit set so that tdx_handle_exit() will handle it
+	 * uniformly.
+	 */
+	to_tdx(vcpu)->exit_reason.bus_lock_detected = true;
+	return 1;
+}
+
+static int __tdx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t fastpath)
 {
 	union tdx_exit_reason exit_reason = to_tdx(vcpu)->exit_reason;
 
@@ -1065,6 +1076,9 @@ int tdx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t fastpath)
 		 * needs to be done in KVM.
 		 */
 		return 1;
+	case EXIT_REASON_BUS_LOCK:
+		tdx_handle_bus_lock_vmexit(vcpu);
+		return 1;
 	default:
 		break;
 	}
@@ -1073,6 +1087,24 @@ unhandled_exit:
 	vcpu->run->exit_reason = KVM_EXIT_UNKNOWN;
 	vcpu->run->hw.hardware_exit_reason = exit_reason.full;
 	return 0;
+}
+
+int tdx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
+{
+	int ret = __tdx_handle_exit(vcpu, exit_fastpath);
+
+	/*
+	 * Exit to user space when bus lock detected to inform that there is
+	 * a bus lock in guest.
+	 */
+	if (to_tdx(vcpu)->exit_reason.bus_lock_detected) {
+		if (ret > 0)
+			vcpu->run->exit_reason = KVM_EXIT_X86_BUS_LOCK;
+
+		vcpu->run->flags |= KVM_RUN_X86_BUS_LOCK;
+		return 0;
+	}
+	return ret;
 }
 
 void tdx_get_exit_info(struct kvm_vcpu *vcpu, u32 *reason,
