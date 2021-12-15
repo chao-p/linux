@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/cpu.h>
+#include <linux/mmu_context.h>
 #include <linux/kvm_host.h>
+
+#include <asm/fpu/xcr.h>
 
 #include "capabilities.h"
 #include "tdx_errno.h"
@@ -83,6 +86,14 @@ struct tdx_capabilities tdx_caps;
 static DEFINE_MUTEX(tdx_lock);
 static struct mutex *tdx_mng_key_config_lock;
 
+/*
+ * A per-CPU list of TD vCPUs associated with a given CPU.  Used when a CPU
+ * is brought down to invoke TDH_VP_FLUSH on the approapriate TD vCPUS.
+ * Protected by interrupt mask.  This list is manipulated in process context
+ * of vcpu and IPI callback.  See tdx_flush_vp_on_cpu().
+ */
+static DEFINE_PER_CPU(struct list_head, associated_tdvcpus);
+
 static u64 hkid_mask __ro_after_init;
 static u8 hkid_start_pos __ro_after_init;
 
@@ -93,6 +104,19 @@ static __always_inline hpa_t set_hkid_to_hpa(hpa_t pa, u16 hkid)
 
 	return pa;
 }
+
+struct tdx_uret_msr {
+	u32 msr;
+	unsigned int slot;
+	u64 defval;
+};
+
+static struct tdx_uret_msr tdx_uret_msrs[] = {
+	{.msr = MSR_SYSCALL_MASK,},
+	{.msr = MSR_STAR,},
+	{.msr = MSR_LSTAR,},
+	{.msr = MSR_TSC_AUX,},
+};
 
 static inline bool is_td_vcpu_created(struct vcpu_tdx *tdx)
 {
@@ -114,12 +138,34 @@ static inline bool is_td_finalized(struct kvm_tdx *kvm_tdx)
 	return kvm_tdx->finalized;
 }
 
+static inline void tdx_disassociate_vp(struct kvm_vcpu *vcpu)
+{
+	list_del(&to_tdx(vcpu)->cpu_list);
+
+	/*
+	 * Ensure tdx->cpu_list is updated is before setting vcpu->cpu to -1,
+	 * otherwise, a different CPU can see vcpu->cpu = -1 and add the vCPU
+	 * to its list before its deleted from this CPUs list.
+	 */
+	smp_wmb();
+
+	vcpu->cpu = -1;
+}
+
 void tdx_hardware_enable(void)
 {
+	INIT_LIST_HEAD(&per_cpu(associated_tdvcpus, raw_smp_processor_id()));
 }
 
 void tdx_hardware_disable(void)
 {
+	int cpu = raw_smp_processor_id();
+	struct list_head *tdvcpus = &per_cpu(associated_tdvcpus, cpu);
+	struct vcpu_tdx *tdx, *tmp;
+
+	/* Safe variant needed as tdx_disassociate_vp() deletes the entry. */
+	list_for_each_entry_safe(tdx, tmp, tdvcpus, cpu_list)
+		tdx_disassociate_vp(&tdx->vcpu);
 }
 
 static void tdx_clear_page(unsigned long page)
@@ -192,10 +238,64 @@ static void tdx_reclaim_td_page(struct tdx_td_page *page)
 	free_page(page->va);
 }
 
+static void tdx_flush_vp(void *arg)
+{
+	struct kvm_vcpu *vcpu = arg;
+	u64 err;
+
+	/* Task migration can race with CPU offlining. */
+	if (vcpu->cpu != raw_smp_processor_id())
+		return;
+
+	/*
+	 * No need to do TDH_VP_FLUSH if the vCPU hasn't been initialized.  The
+	 * list tracking still needs to be updated so that it's correct if/when
+	 * the vCPU does get initialized.
+	 */
+	if (is_td_vcpu_created(to_tdx(vcpu))) {
+		err = tdh_vp_flush(to_tdx(vcpu)->tdvpr.pa);
+		if (unlikely(err && err != TDX_VCPU_NOT_ASSOCIATED)) {
+			if (WARN_ON_ONCE(err))
+				pr_tdx_error(TDH_VP_FLUSH, err, NULL);
+		}
+	}
+
+	tdx_disassociate_vp(vcpu);
+}
+
+static void tdx_flush_vp_on_cpu(struct kvm_vcpu *vcpu)
+{
+	if (unlikely(vcpu->cpu == -1))
+		return;
+
+	smp_call_function_single(vcpu->cpu, tdx_flush_vp, vcpu, 1);
+}
+
+static int tdx_do_tdh_phymem_cache_wb(void *param)
+{
+	u64 err = 0;
+
+	mutex_lock(&tdx_lock);
+	do {
+		err = tdh_phymem_cache_wb(!!err);
+	} while (err == TDX_INTERRUPTED_RESUMABLE);
+	mutex_unlock(&tdx_lock);
+
+	if (WARN_ON_ONCE(err)) {
+		pr_tdx_error(TDH_PHYMEM_CACHE_WB, err, NULL);
+		return -EIO;
+	}
+
+	return 0;
+}
+
 void tdx_vm_teardown(struct kvm *kvm)
 {
 	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
+	struct kvm_vcpu *vcpu;
 	u64 err;
+	int ret;
+	int i;
 
 	if (!is_hkid_assigned(kvm_tdx))
 		return;
@@ -210,6 +310,34 @@ void tdx_vm_teardown(struct kvm *kvm)
 		pr_tdx_error(TDH_MNG_KEY_RECLAIMID, err, NULL);
 		return;
 	}
+
+	kvm_for_each_vcpu(i, vcpu, (&kvm_tdx->kvm))
+		tdx_flush_vp_on_cpu(vcpu);
+
+	mutex_lock(&tdx_lock);
+	err = tdh_mng_vpflushdone(kvm_tdx->tdr.pa);
+	mutex_unlock(&tdx_lock);
+	if (WARN_ON_ONCE(err)) {
+		pr_tdx_error(TDH_MNG_VPFLUSHDONE, err, NULL);
+		return;
+	}
+
+	/*
+	 * TODO: optimize to invoke the callback only once per CPU package
+	 * instead of all CPUS because TDH.PHYMEM.CACHE.WB is per CPU package
+	 * operation.
+	 *
+	 * Invoke the callback one-by-one to avoid contention.
+	 * TDH.PHYMEM.CACHE.WB competes for key ownership table lock.
+	 */
+	ret = 0;
+	for_each_online_cpu(i) {
+		ret = smp_call_on_cpu(i, tdx_do_tdh_phymem_cache_wb, NULL, 1);
+		if (ret)
+			break;
+	}
+	if (unlikely(ret))
+		return;
 
 	mutex_lock(&tdx_lock);
 	err = tdh_mng_key_freeid(kvm_tdx->tdr.pa);
@@ -403,6 +531,7 @@ int tdx_vcpu_create(struct kvm_vcpu *vcpu)
 
 	vcpu->arch.efer = EFER_SCE | EFER_LME | EFER_LMA | EFER_NX;
 
+	vcpu->arch.switch_db_regs = KVM_DEBUGREG_AUTO_SWITCH;
 	vcpu->arch.cr0_guest_owned_bits = -1ul;
 	vcpu->arch.cr4_guest_owned_bits = -1ul;
 
@@ -415,6 +544,10 @@ int tdx_vcpu_create(struct kvm_vcpu *vcpu)
 
 	tdx->pi_desc.nv = POSTED_INTR_VECTOR;
 	tdx->pi_desc.sn = 1;
+	vcpu->arch.root_mmu.no_prefetch = true;
+
+	tdx->host_state_need_save = true;
+	tdx->host_state_need_restore = false;
 
 	return 0;
 
@@ -427,6 +560,61 @@ free_tdvpr:
 	free_page(tdx->tdvpr.va);
 
 	return ret;
+}
+
+void tdx_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
+{
+	struct vcpu_tdx *tdx = to_tdx(vcpu);
+
+	if (vcpu->cpu != cpu) {
+		tdx_flush_vp_on_cpu(vcpu);
+
+		local_irq_disable();
+		/*
+		 * Pairs with the smp_wmb() in tdx_disassociate_vp() to ensure
+		 * vcpu->cpu is read before tdx->cpu_list.
+		 */
+		smp_rmb();
+
+		list_add(&tdx->cpu_list, &per_cpu(associated_tdvcpus, cpu));
+		local_irq_enable();
+	}
+
+	vmx_vcpu_pi_load(vcpu, cpu);
+}
+
+void tdx_prepare_switch_to_guest(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_tdx *tdx = to_tdx(vcpu);
+
+	if (!tdx->host_state_need_save)
+		return;
+
+	if (likely(is_64bit_mm(current->mm)))
+		tdx->msr_host_kernel_gs_base = current->thread.gsbase;
+	else
+		tdx->msr_host_kernel_gs_base = read_msr(MSR_KERNEL_GS_BASE);
+
+	tdx->host_state_need_save = false;
+}
+
+static void tdx_prepare_switch_to_host(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_tdx *tdx = to_tdx(vcpu);
+
+	tdx->host_state_need_save = true;
+	if (!tdx->host_state_need_restore)
+		return;
+
+	wrmsrl(MSR_KERNEL_GS_BASE, tdx->msr_host_kernel_gs_base);
+	tdx->host_state_need_restore = false;
+}
+
+void tdx_vcpu_put(struct kvm_vcpu *vcpu)
+{
+	vmx_vcpu_pi_put(vcpu);
+
+	tdx_prepare_switch_to_host(vcpu);
 }
 
 void tdx_vcpu_free(struct kvm_vcpu *vcpu)
@@ -442,6 +630,18 @@ void tdx_vcpu_free(struct kvm_vcpu *vcpu)
 		tdx_reclaim_td_page(&tdx->tdvpx[i]);
 	kfree(tdx->tdvpx);
 	tdx_reclaim_td_page(&tdx->tdvpr);
+
+	/*
+	 * kvm_free_vcpus()
+	 *   -> kvm_unload_vcpu_mmu()
+	 *
+	 * does vcpu_load() for every vcpu after they already disassociated
+	 * from the per cpu list when tdx_vm_teardown(). So we need to
+	 * disassociate them again, otherwise the freed vcpu data will be
+	 * accessed when do list_{del,add}() on associated_tdvcpus list
+	 * later.
+	 */
+	tdx_flush_vp_on_cpu(vcpu);
 }
 
 void tdx_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
@@ -508,6 +708,87 @@ void tdx_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
 
 td_bugged:
 	vcpu->kvm->vm_bugged = true;
+}
+
+static void tdx_complete_interrupts(struct kvm_vcpu *vcpu)
+{
+	/* Avoid costly SEAMCALL if no nmi was injected */
+	if (vcpu->arch.nmi_injected)
+		vcpu->arch.nmi_injected = td_management_read8(to_tdx(vcpu),
+							      TD_VCPU_PEND_NMI);
+}
+
+static void tdx_user_return_update_cache(void)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(tdx_uret_msrs); i++)
+		kvm_user_return_update_cache(tdx_uret_msrs[i].slot,
+					     tdx_uret_msrs[i].defval);
+}
+
+static void tdx_restore_host_xsave_state(struct kvm_vcpu *vcpu)
+{
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(vcpu->kvm);
+
+	if (static_cpu_has(X86_FEATURE_XSAVE) &&
+	    host_xcr0 != (kvm_tdx->xfam & supported_xcr0))
+		xsetbv(XCR_XFEATURE_ENABLED_MASK, host_xcr0);
+	if (static_cpu_has(X86_FEATURE_XSAVES) &&
+	    /* PT can be exposed to TD guest regardless of KVM's XSS support */
+	    host_xss != (kvm_tdx->xfam & (supported_xss | XFEATURE_MASK_PT)))
+		wrmsrl(MSR_IA32_XSS, host_xss);
+	if (static_cpu_has(X86_FEATURE_PKU) &&
+	    (kvm_tdx->xfam & XFEATURE_MASK_PKRU))
+		write_pkru(vcpu->arch.host_pkru);
+}
+
+u64 __tdx_vcpu_run(hpa_t tdvpr, void *regs, u32 regs_mask);
+
+static noinstr void tdx_vcpu_enter_exit(struct kvm_vcpu *vcpu,
+					struct vcpu_tdx *tdx)
+{
+	kvm_guest_enter_irqoff();
+
+	tdx->exit_reason.full = __tdx_vcpu_run(tdx->tdvpr.pa, vcpu->arch.regs,
+					       tdx->tdvmcall.regs_mask);
+
+	kvm_guest_exit_irqoff();
+}
+
+fastpath_t tdx_vcpu_run(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_tdx *tdx = to_tdx(vcpu);
+
+	if (unlikely(vcpu->kvm->vm_bugged)) {
+		tdx->exit_reason.full = TDX_NON_RECOVERABLE_VCPU;
+		return EXIT_FASTPATH_NONE;
+	}
+
+	trace_kvm_entry(vcpu);
+
+	tdx_vcpu_enter_exit(vcpu, tdx);
+
+	tdx_user_return_update_cache();
+	perf_restore_debug_store();
+	tdx_restore_host_xsave_state(vcpu);
+	tdx->host_state_need_restore = true;
+
+	vmx_register_cache_reset(vcpu);
+
+	trace_kvm_exit(vcpu, KVM_ISA_VMX);
+
+	tdx_complete_interrupts(vcpu);
+
+	if (tdx->exit_reason.error || tdx->exit_reason.non_recoverable)
+		return EXIT_FASTPATH_NONE;
+
+	if (tdx->exit_reason.basic == EXIT_REASON_TDCALL)
+		tdx->tdvmcall.rcx = vcpu->arch.regs[VCPU_REGS_RCX];
+	else
+		tdx->tdvmcall.rcx = 0;
+
+	return EXIT_FASTPATH_NONE;
 }
 
 void tdx_load_mmu_pgd(struct kvm_vcpu *vcpu, hpa_t root_hpa, int pgd_level)
@@ -1231,6 +1512,16 @@ int __init tdx_hardware_setup(struct kvm_x86_ops *x86_ops)
 	max_pa = cpuid_eax(0x80000008) & 0xff;
 	hkid_start_pos = boot_cpu_data.x86_phys_bits;
 	hkid_mask = GENMASK_ULL(max_pa - 1, hkid_start_pos);
+
+	for (i = 0; i < ARRAY_SIZE(tdx_uret_msrs); i++) {
+		tdx_uret_msrs[i].slot = kvm_find_user_return_msr(tdx_uret_msrs[i].msr);
+		if (tdx_uret_msrs[i].slot == -1) {
+			/* If any MSR isn't supported, it is a KVM bug */
+			pr_err("MSR %x isn't included by kvm_find_user_return_msr\n",
+				tdx_uret_msrs[i].msr);
+			return -EIO;
+		}
+	}
 
 	return 0;
 }

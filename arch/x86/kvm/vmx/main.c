@@ -94,6 +94,14 @@ static int vt_vcpu_create(struct kvm_vcpu *vcpu)
 	return vmx_create_vcpu(vcpu);
 }
 
+static fastpath_t vt_vcpu_run(struct kvm_vcpu *vcpu)
+{
+	if (is_td_vcpu(vcpu))
+		return tdx_vcpu_run(vcpu);
+
+	return vmx_vcpu_run(vcpu);
+}
+
 static void vt_vcpu_free(struct kvm_vcpu *vcpu)
 {
 	if (is_td_vcpu(vcpu))
@@ -108,6 +116,38 @@ static void vt_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
 		return tdx_vcpu_reset(vcpu, init_event);
 
 	return vmx_vcpu_reset(vcpu, init_event);
+}
+
+static void vt_prepare_switch_to_guest(struct kvm_vcpu *vcpu)
+{
+	/*
+	 * All host state is saved/restored across SEAMCALL/SEAMRET, and the
+	 * guest state of a TD is obviously off limits.	 Deferring MSRs and DRs
+	 * is pointless because TDX-SEAM needs to load *something* so as not to
+	 * expose guest state.
+	 */
+	if (is_td_vcpu(vcpu)) {
+		tdx_prepare_switch_to_guest(vcpu);
+		return;
+	}
+
+	vmx_prepare_switch_to_guest(vcpu);
+}
+
+static void vt_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
+{
+	if (is_td_vcpu(vcpu))
+		return tdx_vcpu_load(vcpu, cpu);
+
+	return vmx_vcpu_load(vcpu, cpu);
+}
+
+static void vt_vcpu_put(struct kvm_vcpu *vcpu)
+{
+	if (is_td_vcpu(vcpu))
+		return tdx_vcpu_put(vcpu);
+
+	return vmx_vcpu_put(vcpu);
 }
 
 static void vt_flush_tlb_all(struct kvm_vcpu *vcpu)
@@ -149,6 +189,14 @@ static void vt_load_mmu_pgd(struct kvm_vcpu *vcpu, hpa_t root_hpa,
 		return tdx_load_mmu_pgd(vcpu, root_hpa, pgd_level);
 
 	vmx_load_mmu_pgd(vcpu, root_hpa, pgd_level);
+}
+
+static void vt_sched_in(struct kvm_vcpu *vcpu, int cpu)
+{
+	if (is_td_vcpu(vcpu))
+		return;
+
+	vmx_sched_in(vcpu, cpu);
 }
 
 static int vt_mem_enc_op_dev(void __user *argp)
@@ -195,9 +243,9 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 	.vcpu_free = vt_vcpu_free,
 	.vcpu_reset = vt_vcpu_reset,
 
-	.prepare_guest_switch = vmx_prepare_switch_to_guest,
-	.vcpu_load = vmx_vcpu_load,
-	.vcpu_put = vmx_vcpu_put,
+	.prepare_guest_switch = vt_prepare_switch_to_guest,
+	.vcpu_load = vt_vcpu_load,
+	.vcpu_put = vt_vcpu_put,
 
 	.update_exception_bitmap = vmx_update_exception_bitmap,
 	.get_msr_feature = vmx_get_msr_feature,
@@ -227,7 +275,7 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 	.tlb_flush_gva = vt_flush_tlb_gva,
 	.tlb_flush_guest = vt_flush_tlb_guest,
 
-	.run = vmx_vcpu_run,
+	.run = vt_vcpu_run,
 	.handle_exit = vmx_handle_exit,
 	.skip_emulated_instruction = vmx_skip_emulated_instruction,
 	.update_emulated_instruction = vmx_update_emulated_instruction,
@@ -280,7 +328,7 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 
 	.request_immediate_exit = vmx_request_immediate_exit,
 
-	.sched_in = vmx_sched_in,
+	.sched_in = vt_sched_in,
 
 	.cpu_dirty_log_size = PML_ENTITY_NUM,
 	.update_cpu_dirty_logging = vmx_update_cpu_dirty_logging,
