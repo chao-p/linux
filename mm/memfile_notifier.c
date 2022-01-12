@@ -41,11 +41,21 @@ void memfile_notifier_fallocate(struct memfile_notifier_list *list,
 	srcu_read_unlock(&srcu, id);
 }
 
+#ifdef CONFIG_SHMEM
+extern int shmem_get_memfile_notifier_info(struct inode *inode,
+					struct memfile_notifier_list **list,
+					struct memfile_pfn_ops **ops);
+#endif
+
 static int memfile_get_notifier_info(struct inode *inode,
 				     struct memfile_notifier_list **list,
 				     struct memfile_pfn_ops **ops)
 {
-	return -EOPNOTSUPP;
+	int ret = -EOPNOTSUPP;
+#ifdef CONFIG_SHMEM
+	ret = shmem_get_memfile_notifier_info(inode, list, ops);
+#endif
+	return ret;
 }
 
 int memfile_register_notifier(struct inode *inode,
