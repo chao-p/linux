@@ -820,6 +820,37 @@ static int kvm_init_mmu_notifier(struct kvm *kvm)
 
 #endif /* CONFIG_MMU_NOTIFIER && KVM_ARCH_WANT_MMU_NOTIFIER */
 
+#ifdef CONFIG_MEMFILE_NOTIFIER
+static inline int kvm_memfile_register(struct kvm_memory_slot *slot)
+{
+	return memfile_register_notifier(file_inode(slot->private_file),
+					 &slot->notifier,
+					 &slot->pfn_ops);
+}
+
+static inline void kvm_memfile_unregister(struct kvm_memory_slot *slot)
+{
+	if (slot->private_file) {
+		memfile_unregister_notifier(file_inode(slot->private_file),
+					    &slot->notifier);
+		fput(slot->private_file);
+		slot->private_file = NULL;
+	}
+}
+
+#else /* !CONFIG_MEMFILE_NOTIFIER */
+
+static inline int kvm_memfile_register(struct kvm_memory_slot *slot)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline void kvm_memfile_unregister(struct kvm_memory_slot *slot)
+{
+}
+
+#endif /* CONFIG_MEMFILE_NOTIFIER */
+
 #ifdef CONFIG_HAVE_KVM_PM_NOTIFIER
 static int kvm_pm_notifier_call(struct notifier_block *bl,
 				unsigned long state,
@@ -878,6 +909,9 @@ static void kvm_destroy_dirty_bitmap(struct kvm_memory_slot *memslot)
 
 static void kvm_free_memslot(struct kvm *kvm, struct kvm_memory_slot *slot)
 {
+	if (slot->flags & KVM_MEM_PRIVATE)
+		kvm_memfile_unregister(slot);
+
 	kvm_destroy_dirty_bitmap(slot);
 
 	kvm_arch_free_memslot(kvm, slot);
@@ -1627,9 +1661,18 @@ static int kvm_set_memslot(struct kvm *kvm,
 	/* Copy the arch-specific data, again after (re)acquiring slots_arch_lock. */
 	memcpy(&new->arch, &old.arch, sizeof(old.arch));
 
+	if (mem->flags & KVM_MEM_PRIVATE && change == KVM_MR_CREATE) {
+		r = kvm_memfile_register(new);
+		if (r)
+			goto out_slots;
+	}
+
 	r = kvm_arch_prepare_memory_region(kvm, new, mem, change);
-	if (r)
+	if (r) {
+		if (mem->flags & KVM_MEM_PRIVATE && change == KVM_MR_CREATE)
+			kvm_memfile_unregister(new);
 		goto out_slots;
+	}
 
 	update_memslots(slots, new, change);
 	slots = install_new_memslots(kvm, as_id, slots);
@@ -1741,6 +1784,17 @@ int __kvm_set_memory_region(struct kvm *kvm,
 	new.npages = mem->memory_size >> PAGE_SHIFT;
 	new.flags = mem->flags;
 	new.userspace_addr = mem->userspace_addr;
+
+	if (mem->flags & KVM_MEM_PRIVATE) {
+		struct fd fd = fdget(region_ext->private_fd);
+		if (!fd.file)
+			return -EINVAL;
+		new.private_file = fd.file;
+		new.private_offset = region_ext->private_offset;
+	} else {
+		new.private_file = NULL;
+		new.private_offset = 0;
+	}
 
 	if (new.npages > KVM_MEM_MAX_NR_PAGES)
 		return -EINVAL;
