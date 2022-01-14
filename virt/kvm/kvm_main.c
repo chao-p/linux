@@ -1491,9 +1491,18 @@ static void kvm_replace_memslot(struct kvm *kvm,
 	}
 }
 
-static int check_memory_region_flags(const struct kvm_userspace_memory_region *mem)
+bool __weak kvm_arch_private_memory_supported(struct kvm *kvm)
+{
+	return false;
+}
+
+static int check_memory_region_flags(struct kvm *kvm,
+				const struct kvm_userspace_memory_region *mem)
 {
 	u32 valid_flags = KVM_MEM_LOG_DIRTY_PAGES;
+
+	if (kvm_arch_private_memory_supported(kvm))
+		valid_flags |= KVM_MEM_PRIVATE;
 
 #ifdef __KVM_HAVE_READONLY_MEM
 	valid_flags |= KVM_MEM_READONLY;
@@ -1873,15 +1882,32 @@ static int kvm_set_memslot(struct kvm *kvm,
 }
 
 static bool kvm_check_memslot_overlap(struct kvm_memslots *slots, int id,
-				      gfn_t start, gfn_t end)
+				      struct file *file,
+				      gfn_t start, gfn_t end,
+				      loff_t start_off, loff_t end_off)
 {
 	struct kvm_memslot_iter iter;
+	struct kvm_memory_slot *slot;
+	struct inode *inode;
+	int bkt;
 
 	kvm_for_each_memslot_in_gfn_range(&iter, slots, start, end) {
 		if (iter.slot->id != id)
 			return true;
 	}
 
+	/* Disallow mapping the same file+offset into multiple gfns. */
+	if (file) {
+		inode = file_inode(file);
+		kvm_for_each_memslot(slot, bkt, slots) {
+			if (slot->private_file &&
+			     file_inode(slot->private_file) == inode &&
+			     !(end_off <= slot->private_offset ||
+			       start_off >= slot->private_offset
+					     + (slot->npages >> PAGE_SHIFT)))
+				return true;
+		}
+	}
 	return false;
 }
 
@@ -1906,7 +1932,7 @@ int __kvm_set_memory_region(struct kvm *kvm,
 	int as_id, id;
 	int r;
 
-	r = check_memory_region_flags(mem);
+	r = check_memory_region_flags(kvm, mem);
 	if (r)
 		return r;
 
@@ -1919,10 +1945,12 @@ int __kvm_set_memory_region(struct kvm *kvm,
 		return -EINVAL;
 	if (mem->guest_phys_addr & (PAGE_SIZE - 1))
 		return -EINVAL;
-	/* We can read the guest memory with __xxx_user() later on. */
 	if ((mem->userspace_addr & (PAGE_SIZE - 1)) ||
-	    (mem->userspace_addr != untagged_addr(mem->userspace_addr)) ||
-	     !access_ok((void __user *)(unsigned long)mem->userspace_addr,
+	    (mem->userspace_addr != untagged_addr(mem->userspace_addr)))
+		return -EINVAL;
+	/* We can read the guest memory with __xxx_user() later on. */
+	if (!(mem->flags & KVM_MEM_PRIVATE) &&
+	    !access_ok((void __user *)(unsigned long)mem->userspace_addr,
 			mem->memory_size))
 		return -EINVAL;
 	if (as_id >= KVM_ADDRESS_SPACE_NUM || id >= KVM_MEM_SLOTS_NUM)
@@ -1963,6 +1991,9 @@ int __kvm_set_memory_region(struct kvm *kvm,
 		if ((kvm->nr_memslot_pages + npages) < kvm->nr_memslot_pages)
 			return -EINVAL;
 	} else { /* Modify an existing slot. */
+		/* Private memslots are immutable, they can only be deleted. */
+		if (mem->flags & KVM_MEM_PRIVATE)
+			return -EINVAL;
 		if ((mem->userspace_addr != old->userspace_addr) ||
 		    (npages != old->npages) ||
 		    ((mem->flags ^ old->flags) & KVM_MEM_READONLY))
@@ -1983,7 +2014,11 @@ int __kvm_set_memory_region(struct kvm *kvm,
 	}
 
 	if ((change == KVM_MR_CREATE || change == KVM_MR_MOVE) &&
-	    kvm_check_memslot_overlap(slots, id, base_gfn, base_gfn + npages)) {
+	    kvm_check_memslot_overlap(slots, id, file,
+				      base_gfn, base_gfn + npages,
+				      region_ext->private_offset,
+				      region_ext->private_offset +
+						mem->memory_size)) {
 		r = -EEXIST;
 		goto out;
 	}
