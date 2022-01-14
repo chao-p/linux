@@ -1330,6 +1330,12 @@ static int kvm_alloc_dirty_bitmap(struct kvm_memory_slot *memslot)
 	return 0;
 }
 
+static inline void kvm_update_memfile_list(struct kvm_memory_slot *new,
+					   struct kvm_memory_slot *old)
+{
+	if (kvm_slot_is_private(new))
+		list_replace_rcu(&old->notifier.list, &new->notifier.list);
+}
 /*
  * Delete a memslot by decrementing the number of used slots and shifting all
  * other entries in the array forward one spot.
@@ -1350,9 +1356,11 @@ static inline void kvm_memslot_delete(struct kvm_memslots *slots,
 
 	for (i = slots->id_to_index[memslot->id]; i < slots->used_slots; i++) {
 		mslots[i] = mslots[i + 1];
+		kvm_update_memfile_list(&mslots[i], &mslots[i + 1]);
 		slots->id_to_index[mslots[i].id] = i;
 	}
 	mslots[i] = *memslot;
+	kvm_update_memfile_list(&mslots[i], memslot);
 	slots->id_to_index[memslot->id] = -1;
 }
 
@@ -1395,6 +1403,7 @@ static inline int kvm_memslot_move_backward(struct kvm_memslots *slots,
 
 		/* Shift the next memslot forward one and update its index. */
 		mslots[i] = mslots[i + 1];
+		kvm_update_memfile_list(&mslots[i], &mslots[i + 1]);
 		slots->id_to_index[mslots[i].id] = i;
 	}
 	return i;
@@ -1422,6 +1431,7 @@ static inline int kvm_memslot_move_forward(struct kvm_memslots *slots,
 
 		/* Shift the next memslot back one and update its index. */
 		mslots[i] = mslots[i - 1];
+		kvm_update_memfile_list(&mslots[i], &mslots[i - 1]);
 		slots->id_to_index[mslots[i].id] = i;
 	}
 	return i;
@@ -1488,6 +1498,7 @@ static void update_memslots(struct kvm_memslots *slots,
 		 * its index accordingly.
 		 */
 		slots->memslots[i] = *memslot;
+		kvm_update_memfile_list(&slots->memslots[i], memslot);
 		slots->id_to_index[memslot->id] = i;
 	}
 }
@@ -1723,8 +1734,10 @@ static int kvm_set_memslot(struct kvm *kvm,
 	kvm_arch_commit_memory_region(kvm, mem, &old, new, change);
 
 	/* Free the old memslot's metadata.  Note, this is the full copy!!! */
-	if (change == KVM_MR_DELETE)
+	if (change == KVM_MR_DELETE) {
+		kvm_update_memfile_list(&old, slot);
 		kvm_free_memslot(kvm, &old);
+	}
 
 	kvfree(slots);
 	return 0;
