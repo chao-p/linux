@@ -2093,7 +2093,8 @@ retry:
 		pfn = spte_to_pfn(iter.old_spte);
 		if (kvm_is_reserved_pfn(pfn) ||
 		    iter.level >= kvm_mmu_max_mapping_level(kvm, slot, iter.gfn,
-							    pfn, PG_LEVEL_NUM))
+						pfn, PG_LEVEL_NUM,
+						is_private_spte(iter.old_spte)))
 			continue;
 
 		/* Note, a successful atomic zap also does a remote TLB flush. */
