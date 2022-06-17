@@ -862,6 +862,35 @@ static int kvm_init_mmu_notifier(struct kvm *kvm)
 
 #endif /* CONFIG_MMU_NOTIFIER && KVM_ARCH_WANT_MMU_NOTIFIER */
 
+#ifdef CONFIG_HAVE_KVM_PRIVATE_MEM
+#define KVM_MEM_ATTR_PRIVATE	0x0001
+static int kvm_vm_ioctl_set_encrypted_region(struct kvm *kvm, unsigned int ioctl,
+					     struct kvm_enc_region *region)
+{
+	unsigned long start, end;
+	void *entry;
+	int r;
+
+	if (region->size == 0 || region->addr + region->size < region->addr)
+		return -EINVAL;
+	if (region->addr & (PAGE_SIZE - 1) || region->size & (PAGE_SIZE - 1))
+		return -EINVAL;
+
+	start = region->addr >> PAGE_SHIFT;
+	end = (region->addr + region->size - 1) >> PAGE_SHIFT;
+
+	entry = ioctl == KVM_MEMORY_ENCRYPT_REG_REGION ?
+				xa_mk_value(KVM_MEM_ATTR_PRIVATE) : NULL;
+
+	r = xa_err(xa_store_range(&kvm->mem_attr_array, start, end,
+					entry, GFP_KERNEL_ACCOUNT));
+
+	kvm_zap_gfn_range(kvm, start, end + 1);
+
+	return r;
+}
+#endif /* CONFIG_HAVE_KVM_PRIVATE_MEM */
+
 #ifdef CONFIG_HAVE_KVM_PM_NOTIFIER
 static int kvm_pm_notifier_call(struct notifier_block *bl,
 				unsigned long state,
@@ -1086,6 +1115,9 @@ static struct kvm *kvm_create_vm(unsigned long type)
 	spin_lock_init(&kvm->mn_invalidate_lock);
 	rcuwait_init(&kvm->mn_memslots_update_rcuwait);
 	xa_init(&kvm->vcpu_array);
+#ifdef CONFIG_HAVE_KVM_PRIVATE_MEM
+	xa_init(&kvm->mem_attr_array);
+#endif
 
 	INIT_LIST_HEAD(&kvm->gpc_list);
 	spin_lock_init(&kvm->gpc_lock);
@@ -1253,6 +1285,9 @@ static void kvm_destroy_vm(struct kvm *kvm)
 		kvm_free_memslots(kvm, &kvm->__memslots[i][0]);
 		kvm_free_memslots(kvm, &kvm->__memslots[i][1]);
 	}
+#ifdef CONFIG_HAVE_KVM_PRIVATE_MEM
+	xa_destroy(&kvm->mem_attr_array);
+#endif
 	cleanup_srcu_struct(&kvm->irq_srcu);
 	cleanup_srcu_struct(&kvm->srcu);
 	kvm_arch_free_vm(kvm);
@@ -1459,6 +1494,11 @@ static void kvm_replace_memslot(struct kvm *kvm,
 bool __weak kvm_arch_dirty_log_supported(struct kvm *kvm)
 {
 	return true;
+}
+
+bool __weak kvm_arch_private_mem_supported(struct kvm *kvm)
+{
+	return false;
 }
 
 static int check_memory_region_flags(struct kvm *kvm,
@@ -4588,6 +4628,22 @@ static long kvm_vm_ioctl(struct file *filp,
 		r = kvm_vm_ioctl_set_memory_region(kvm, &mem);
 		break;
 	}
+#ifdef CONFIG_HAVE_KVM_PRIVATE_MEM
+	case KVM_MEMORY_ENCRYPT_REG_REGION:
+	case KVM_MEMORY_ENCRYPT_UNREG_REGION: {
+		struct kvm_enc_region region;
+
+		if (!kvm_arch_private_mem_supported(kvm))
+			goto arch_vm_ioctl;
+
+		r = -EFAULT;
+		if (copy_from_user(&region, argp, sizeof(region)))
+			goto out;
+
+		r = kvm_vm_ioctl_set_encrypted_region(kvm, ioctl, &region);
+		break;
+	}
+#endif
 	case KVM_GET_DIRTY_LOG: {
 		struct kvm_dirty_log log;
 
@@ -4741,6 +4797,7 @@ static long kvm_vm_ioctl(struct file *filp,
 		r = kvm_vm_ioctl_get_stats_fd(kvm);
 		break;
 	default:
+arch_vm_ioctl:
 		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
 	}
 out:
