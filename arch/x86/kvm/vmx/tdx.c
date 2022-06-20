@@ -1618,7 +1618,7 @@ static void tdx_unpin(struct kvm *kvm, gfn_t gfn, kvm_pfn_t pfn)
 	struct kvm_memory_slot *slot = gfn_to_memslot(kvm, gfn);
 	struct page *page;
 
-	if (kvm_slot_is_private(slot)) {
+	if (kvm_slot_can_be_private(slot)) {
 		/*put_page(page);
 		WARN_ON(!page_count(page) && to_kvm_tdx(kvm)->hkid > 0);*/
 		return;
