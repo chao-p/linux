@@ -4412,7 +4412,7 @@ static bool is_page_fault_stale(struct kvm_vcpu *vcpu,
 		return true;
 
 	return fault->slot &&
-	       mmu_notifier_retry_hva(vcpu->kvm, mmu_seq, fault->hva);
+	       mmu_notifier_retry_gfn(vcpu->kvm, mmu_seq, fault->gfn);
 }
 
 void kvm_mmu_release_fault(struct kvm *kvm, struct kvm_page_fault *fault, int r)

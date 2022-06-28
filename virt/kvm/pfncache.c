@@ -112,7 +112,7 @@ static void __release_gpc(struct kvm *kvm, kvm_pfn_t pfn, void *khva, gpa_t gpa)
 	}
 }
 
-static kvm_pfn_t hva_to_pfn_retry(struct kvm *kvm, unsigned long uhva)
+static kvm_pfn_t hva_to_pfn_retry(struct kvm *kvm, unsigned long uhva, gfn_t gfn)
 {
 	unsigned long mmu_seq;
 	kvm_pfn_t new_pfn;
@@ -128,7 +128,7 @@ static kvm_pfn_t hva_to_pfn_retry(struct kvm *kvm, unsigned long uhva)
 			break;
 
 		KVM_MMU_READ_LOCK(kvm);
-		retry = mmu_notifier_retry_hva(kvm, mmu_seq, uhva);
+		retry = mmu_notifier_retry_gfn(kvm, mmu_seq, gfn);
 		KVM_MMU_READ_UNLOCK(kvm);
 		if (!retry)
 			break;
@@ -200,7 +200,7 @@ int kvm_gfn_to_pfn_cache_refresh(struct kvm *kvm, struct gfn_to_pfn_cache *gpc,
 
 		write_unlock_irq(&gpc->lock);
 
-		new_pfn = hva_to_pfn_retry(kvm, uhva);
+		new_pfn = hva_to_pfn_retry(kvm, uhva, gpa_to_gfn(gpa));
 		if (is_error_noslot_pfn(new_pfn)) {
 			ret = -EFAULT;
 			goto map_done;
