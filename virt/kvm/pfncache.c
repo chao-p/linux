@@ -119,7 +119,7 @@ static kvm_pfn_t hva_to_pfn_retry(struct kvm *kvm, unsigned long uhva, gfn_t gfn
 	int retry;
 
 	do {
-		mmu_seq = kvm->mmu_notifier_seq;
+		mmu_seq = kvm->mmu_updating_seq;
 		smp_rmb();
 
 		/* We always request a writeable mapping */
@@ -128,7 +128,7 @@ static kvm_pfn_t hva_to_pfn_retry(struct kvm *kvm, unsigned long uhva, gfn_t gfn
 			break;
 
 		KVM_MMU_READ_LOCK(kvm);
-		retry = mmu_notifier_retry_gfn(kvm, mmu_seq, gfn);
+		retry = mmu_updating_retry_gfn(kvm, mmu_seq, gfn);
 		KVM_MMU_READ_UNLOCK(kvm);
 		if (!retry)
 			break;
