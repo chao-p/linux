@@ -2338,7 +2338,8 @@ static u64 kvm_supported_mem_attributes(struct kvm *kvm)
 	return 0;
 }
 
-static void kvm_unmap_mem_range(struct kvm *kvm, gfn_t start, gfn_t end)
+static void kvm_unmap_mem_range(struct kvm *kvm, gfn_t start, gfn_t end,
+				unsigned long attrs)
 {
 	struct kvm_gfn_range gfn_range;
 	struct kvm_memory_slot *slot;
@@ -2362,6 +2363,10 @@ static void kvm_unmap_mem_range(struct kvm *kvm, gfn_t start, gfn_t end)
 			gfn_range.slot = slot;
 
 			r |= kvm_unmap_gfn_range(kvm, &gfn_range);
+
+			kvm_arch_set_memory_attributes(kvm, slot, attrs,
+						       gfn_range.start,
+						       gfn_range.end);
 		}
 	}
 
@@ -2411,7 +2416,7 @@ static int kvm_vm_ioctl_set_mem_attributes(struct kvm *kvm,
 		idx = srcu_read_lock(&kvm->srcu);
 		KVM_MMU_LOCK(kvm);
 		if (i > start)
-			kvm_unmap_mem_range(kvm, start, i);
+			kvm_unmap_mem_range(kvm, start, i, attrs->attributes);
 		kvm_mmu_invalidate_end(kvm);
 		KVM_MMU_UNLOCK(kvm);
 		srcu_read_unlock(&kvm->srcu, idx);
