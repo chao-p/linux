@@ -2312,11 +2312,26 @@ static inline void kvm_account_pgtable_pages(void *virt, int nr)
 #define  KVM_DIRTY_RING_MAX_ENTRIES  65536
 
 #ifdef __KVM_HAVE_ARCH_SET_MEMORY_ATTRIBUTES
+/* memory attr on [start, end) */
+int kvm_vm_reserve_mem_attr(struct kvm *kvm, gfn_t start, gfn_t end);
+int kvm_vm_set_mem_attr(struct kvm *kvm, unsigned long attr,
+			gfn_t start, gfn_t end);
 void kvm_arch_set_memory_attributes(struct kvm *kvm,
 				    struct kvm_memory_slot *slot,
 				    unsigned long attrs,
 				    gfn_t start, gfn_t end);
 #else
+static inline int kvm_vm_reserve_mem_attr(struct kvm *kvm, gfn_t start, gfn_t end)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int kvm_vm_set_mem_attr(struct kvm *kvm, unsigned long attr,
+				      gfn_t start, gfn_t end)
+{
+	return -EOPNOTSUPP;
+}
+
 static inline void kvm_arch_set_memory_attributes(struct kvm *kvm,
 						  struct kvm_memory_slot *slot,
 						  unsigned long attrs,
