@@ -2328,11 +2328,28 @@ static inline bool kvm_mem_is_private(struct kvm *kvm, gfn_t gfn)
 	return IS_ENABLED(CONFIG_KVM_PRIVATE_MEM) &&
 	       kvm_get_memory_attributes(kvm, gfn) & KVM_MEMORY_ATTRIBUTE_PRIVATE;
 }
+
+int kvm_vm_reserve_mem_attr(struct kvm *kvm, gfn_t start, gfn_t end);
+int kvm_vm_set_mem_attr(struct kvm *kvm, unsigned long attr,
+			gfn_t start, gfn_t end);
+
 #else
 static inline bool kvm_mem_is_private(struct kvm *kvm, gfn_t gfn)
 {
 	return false;
 }
+
+static inline int kvm_vm_reserve_mem_attr(struct kvm *kvm, gfn_t start, gfn_t end)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int kvm_vm_set_mem_attr(struct kvm *kvm, unsigned long attr,
+				      gfn_t start, gfn_t end)
+{
+	return -EOPNOTSUPP;
+}
+
 #endif /* CONFIG_HAVE_KVM_MEMORY_ATTRIBUTES */
 
 #ifdef CONFIG_KVM_PRIVATE_MEM
