@@ -4653,11 +4653,10 @@ static int kvm_faultin_pfn(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
 	}
 
 	if (kvm_gfn_shared_mask(vcpu->kvm) &&
-	    (kvm_mem_is_private(vcpu->kvm, fault->gfn) != fault->is_private))
-		return RET_PF_RETRY;
-
-	if (fault->is_private != kvm_mem_is_private(vcpu->kvm, fault->gfn))
-		return kvm_do_memory_fault_exit(vcpu, fault);
+	    (kvm_mem_is_private(vcpu->kvm, fault->gfn) != fault->is_private)) {
+		kvm_do_memory_fault_exit(vcpu, fault);
+		return RET_PF_USER;
+	}
 
 	if (kvm_is_faultin_private(fault))
 		return kvm_faultin_pfn_private(vcpu, fault);
