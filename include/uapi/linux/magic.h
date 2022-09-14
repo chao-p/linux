@@ -105,5 +105,6 @@
 #define Z3FOLD_MAGIC		0x33
 #define PPC_CMM_MAGIC		0xc7571590
 #define SECRETMEM_MAGIC		0x5345434d	/* "SECM" */
+#define INACCESSIBLE_MAGIC	0x494e4143	/* "INAC" */
 
 #endif /* __LINUX_MAGIC_H__ */
