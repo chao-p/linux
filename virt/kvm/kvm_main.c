@@ -613,6 +613,7 @@ static __always_inline int __kvm_handle_hva_range(struct kvm *kvm,
 			gfn_range.start = hva_to_gfn_memslot(hva_start, slot);
 			gfn_range.end = hva_to_gfn_memslot(hva_end + PAGE_SIZE - 1, slot);
 			gfn_range.slot = slot;
+			gfn_range.flags = 0;
 
 			if (!locked) {
 				locked = true;
@@ -971,6 +972,7 @@ static void kvm_restrictedmem_invalidate_begin(struct restrictedmem_notifier *no
 	gfn_range.slot = slot;
 	gfn_range.pte = __pte(0);
 	gfn_range.may_block = true;
+	gfn_range.flags = KVM_GFN_RANGE_FLAGS_RESTRICTED_MEM;
 
 	idx = srcu_read_lock(&kvm->srcu);
 	KVM_MMU_LOCK(kvm);
@@ -2535,6 +2537,9 @@ static void kvm_mem_attrs_changed(struct kvm *kvm, unsigned long attrs,
 			if (gfn_range.start >= gfn_range.end)
 				continue;
 			gfn_range.slot = slot;
+			gfn_range.flags = KVM_GFN_RANGE_FLAGS_SET_MEM_ATTR;
+			gfn_range.attr = attrs;
+
 
 			flush |= kvm_unmap_gfn_range(kvm, &gfn_range);
 
