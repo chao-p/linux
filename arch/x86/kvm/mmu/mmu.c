@@ -1763,15 +1763,7 @@ bool kvm_unmap_gfn_range(struct kvm *kvm, struct kvm_gfn_range *range)
 
 		if (range->flags & KVM_GFN_RANGE_FLAGS_RESTRICTED_MEM) {
 			WARN_ON_ONCE(!kvm_slot_can_be_private(range->slot));
-			/*
-			 * For private slot, the callback is triggered
-			 * via falloc.  Mode can be allocation or punch
-			 * hole.  Because the private-shared conversion
-			 * is done via
-			 * KVM_MEMORY_ENCRYPT_REG/UNREG_REGION, we can
-			 * ignore the request from restrictedmem.
-			 */
-			return flush;
+			zap_private = true;
 		} else if (range->flags & KVM_GFN_RANGE_FLAGS_SET_MEM_ATTR) {
 			zap_private = !(range->attr & KVM_MEMORY_ATTRIBUTE_PRIVATE);
 		} else
