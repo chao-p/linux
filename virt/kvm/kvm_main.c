@@ -1060,6 +1060,7 @@ int kvm_vm_set_mem_attr(struct kvm *kvm, unsigned long attrs, gfn_t start, gfn_t
 {
 	void *entry;
 	gfn_t gfn;
+	int idx;
 	int r;
 	int i;
 
@@ -1077,6 +1078,7 @@ int kvm_vm_set_mem_attr(struct kvm *kvm, unsigned long attrs, gfn_t start, gfn_t
 		return r;
 
 	end = gfn;
+	idx = srcu_read_lock(&kvm->srcu);
 	for (i = 0; i < KVM_ADDRESS_SPACE_NUM; i++) {
 		struct kvm_memslot_iter iter;
 		struct kvm_memslots *slots;
@@ -1092,6 +1094,7 @@ int kvm_vm_set_mem_attr(struct kvm *kvm, unsigned long attrs, gfn_t start, gfn_t
 			kvm_arch_set_memory_attributes(kvm, slot, attrs, s, e);
 		}
 	}
+	srcu_read_unlock(&kvm->srcu, idx);
 
 	return r;
 }
