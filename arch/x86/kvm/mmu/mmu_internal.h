@@ -215,7 +215,10 @@ static inline int kvm_alloc_private_spt_for_split(struct kvm *kvm, struct kvm_mm
 						  gfp_t gfp, bool can_yield)
 {
 #ifdef CONFIG_INTEL_TDX_HOST_DEBUG_MEMORY_CORRUPT
-	if (gfp & GFP_NOWAIT) {
+	gfp &= ~__GFP_ZERO;
+
+	/* This check is hacky. See the caller, tdp_mmu_alloc_sp_for_split(). */
+	if ((gfp & GFP_NOWAIT) && gfp != GFP_KERNEL_ACCOUNT) {
 		if (can_yield)
 			return -ENOMEM;
 		/*
@@ -234,7 +237,6 @@ static inline int kvm_alloc_private_spt_for_split(struct kvm *kvm, struct kvm_mm
 	}
 #endif
 
-	gfp &= ~__GFP_ZERO;
 	sp->private_spt = (void *)__get_free_page(gfp);
 	if (!sp->private_spt)
 		return -ENOMEM;
