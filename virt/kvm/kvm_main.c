@@ -2599,8 +2599,9 @@ static void kvm_mem_attrs_changed(struct kvm *kvm, unsigned long attrs,
 	bool flush = false;
 	int i;
 
-	gfn_range.pte = __pte(0);
+	gfn_range.attr = attrs;
 	gfn_range.may_block = true;
+	gfn_range.flags = KVM_GFN_RANGE_FLAGS_SET_MEM_ATTR;
 
 	for (i = 0; i < KVM_ADDRESS_SPACE_NUM; i++) {
 		slots = __kvm_memslots(kvm, i);
@@ -2612,8 +2613,6 @@ static void kvm_mem_attrs_changed(struct kvm *kvm, unsigned long attrs,
 			if (gfn_range.start >= gfn_range.end)
 				continue;
 			gfn_range.slot = slot;
-			gfn_range.flags = KVM_GFN_RANGE_FLAGS_SET_MEM_ATTR;
-			gfn_range.attr = attrs;
 
 
 			flush |= kvm_unmap_gfn_range(kvm, &gfn_range);

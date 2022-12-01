@@ -255,7 +255,7 @@ struct kvm_gfn_range {
 	gfn_t end;
 	union {
 		pte_t pte;
-		unsigned long attr;
+		u64 attr;	/* FIXME: raname to attrs */
 	};
 	bool may_block;
 	unsigned int flags;
