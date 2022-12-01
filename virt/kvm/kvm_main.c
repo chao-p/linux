@@ -2582,8 +2582,9 @@ static void kvm_unmap_mem_range(struct kvm *kvm, gfn_t start, gfn_t end,
 	int i;
 	int r = 0;
 
-	gfn_range.pte = __pte(0);
+	gfn_range.attr = attrs;
 	gfn_range.may_block = true;
+	gfn_range.flags = KVM_GFN_RANGE_FLAGS_SET_MEM_ATTR;
 
 	for (i = 0; i < KVM_ADDRESS_SPACE_NUM; i++) {
 		slots = __kvm_memslots(kvm, i);
@@ -2595,8 +2596,6 @@ static void kvm_unmap_mem_range(struct kvm *kvm, gfn_t start, gfn_t end,
 			if (gfn_range.start >= gfn_range.end)
 				continue;
 			gfn_range.slot = slot;
-			gfn_range.flags = KVM_GFN_RANGE_FLAGS_SET_MEM_ATTR;
-			gfn_range.attr = attrs;
 
 
 			r |= kvm_unmap_gfn_range(kvm, &gfn_range);
