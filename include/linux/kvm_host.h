@@ -44,6 +44,7 @@
 
 #include <asm/kvm_host.h>
 #include <linux/kvm_dirty_ring.h>
+#include <linux/restrictedmem.h>
 
 #ifndef KVM_MAX_VCPU_IDS
 #define KVM_MAX_VCPU_IDS KVM_MAX_VCPUS
@@ -2307,6 +2308,40 @@ void kvm_arch_set_memory_attributes(struct kvm *kvm,
 				    struct kvm_memory_slot *slot,
 				    unsigned long attrs,
 				    gfn_t start, gfn_t end);
+
+static inline bool kvm_mem_is_private(struct kvm *kvm, gfn_t gfn)
+{
+	return IS_ENABLED(CONFIG_KVM_PRIVATE_MEM) &&
+	       kvm_get_memory_attributes(kvm, gfn) & KVM_MEMORY_ATTRIBUTE_PRIVATE;
+}
 #endif /* CONFIG_HAVE_KVM_MEMORY_ATTRIBUTES */
+
+#ifdef CONFIG_KVM_PRIVATE_MEM
+static inline int kvm_restricted_mem_get_pfn(struct kvm_memory_slot *slot,
+					     gfn_t gfn, kvm_pfn_t *pfn,
+					     int *order)
+{
+	pgoff_t index = gfn - slot->base_gfn +
+			(slot->restricted_offset >> PAGE_SHIFT);
+	struct page *page;
+	int ret;
+
+	ret = restrictedmem_get_page(slot->restricted_file, index,
+				     &page, order);
+	if (ret)
+		return ret;
+
+	*pfn = page_to_pfn(page);
+	return 0;
+}
+#else
+static inline int kvm_restricted_mem_get_pfn(struct kvm_memory_slot *slot,
+					     gfn_t gfn, kvm_pfn_t *pfn,
+					     int *order)
+{
+	WARN_ON_ONCE(1);
+	return -EIO;
+}
+#endif /* CONFIG_KVM_PRIVATE_MEM */
 
 #endif
