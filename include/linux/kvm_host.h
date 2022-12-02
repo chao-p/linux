@@ -2314,6 +2314,11 @@ static inline bool kvm_mem_is_private(struct kvm *kvm, gfn_t gfn)
 	return IS_ENABLED(CONFIG_KVM_PRIVATE_MEM) &&
 	       kvm_get_memory_attributes(kvm, gfn) & KVM_MEMORY_ATTRIBUTE_PRIVATE;
 }
+#else
+static inline bool kvm_mem_is_private(struct kvm *kvm, gfn_t gfn)
+{
+	return false;
+}
 #endif /* CONFIG_HAVE_KVM_MEMORY_ATTRIBUTES */
 
 #ifdef CONFIG_KVM_PRIVATE_MEM
