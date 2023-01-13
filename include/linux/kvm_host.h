@@ -577,6 +577,11 @@ struct kvm_memory_slot {
 	u16 as_id;
 };
 
+static inline bool kvm_slot_can_be_private(const struct kvm_memory_slot *slot)
+{
+	return false;
+}
+
 static inline bool kvm_slot_dirty_track_enabled(const struct kvm_memory_slot *slot)
 {
 	return slot->flags & KVM_MEM_LOG_DIRTY_PAGES;
@@ -2289,5 +2294,19 @@ static inline void kvm_account_pgtable_pages(void *virt, int nr)
 
 /* Max number of entries allowed for each kvm dirty ring */
 #define  KVM_DIRTY_RING_MAX_ENTRIES  65536
+
+#ifdef CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES
+static inline unsigned long kvm_get_memory_attributes(struct kvm *kvm, gfn_t gfn)
+{
+	lockdep_assert_held(kvm->mmu_lock);
+
+	return xa_to_value(xa_load(&kvm->mem_attr_array, gfn));
+}
+
+void kvm_arch_set_memory_attributes(struct kvm *kvm,
+				    struct kvm_memory_slot *slot,
+				    unsigned long attrs,
+				    gfn_t start, gfn_t end);
+#endif /* CONFIG_HAVE_KVM_MEMORY_ATTRIBUTES */
 
 #endif
