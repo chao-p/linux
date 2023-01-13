@@ -34,6 +34,7 @@
 #include <linux/instrumentation.h>
 #include <linux/interval_tree.h>
 #include <linux/rbtree.h>
+#include <linux/restrictedmem.h>
 #include <linux/xarray.h>
 #include <asm/signal.h>
 
@@ -576,11 +577,15 @@ struct kvm_memory_slot {
 	u32 flags;
 	short id;
 	u16 as_id;
+	struct file *restricted_file;
+	gfn_t restricted_offset;
+	struct restrictedmem_notifier notifier;
+	struct kvm *kvm;
 };
 
 static inline bool kvm_slot_can_be_private(const struct kvm_memory_slot *slot)
 {
-	return false;
+	return slot && (slot->flags & KVM_MEM_PRIVATE);
 }
 
 static inline bool kvm_slot_dirty_track_enabled(const struct kvm_memory_slot *slot)
@@ -1461,6 +1466,7 @@ bool kvm_arch_dy_has_pending_interrupt(struct kvm_vcpu *vcpu);
 int kvm_arch_post_init_vm(struct kvm *kvm);
 void kvm_arch_pre_destroy_vm(struct kvm *kvm);
 int kvm_arch_create_vm_debugfs(struct kvm *kvm);
+bool kvm_arch_has_private_mem(struct kvm *kvm);
 
 #ifndef __KVM_HAVE_ARCH_VM_ALLOC
 /*
@@ -2344,7 +2350,7 @@ static inline int kvm_restricted_mem_get_pfn(struct kvm_memory_slot *slot,
 					     gfn_t gfn, kvm_pfn_t *pfn,
 					     int *order)
 {
-	WARN_ON_ONCE(1);
+	KVM_BUG_ON(1, slot->kvm);
 	return -EIO;
 }
 #endif /* CONFIG_KVM_PRIVATE_MEM */
