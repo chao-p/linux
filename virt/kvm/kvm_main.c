@@ -935,7 +935,7 @@ static bool restrictedmem_range_is_valid(struct kvm_memory_slot *slot,
 					 pgoff_t start, pgoff_t end,
 					 gfn_t *gfn_start, gfn_t *gfn_end)
 {
-	unsigned long base_pgoff = slot->restricted_offset >> PAGE_SHIFT;
+	unsigned long base_pgoff = slot->restricted_offset;
 
 	if (start > base_pgoff)
 		*gfn_start = slot->base_gfn + start - base_pgoff;
@@ -2275,7 +2275,7 @@ int __kvm_set_memory_region(struct kvm *kvm,
 			r = -EINVAL;
 			goto out;
 		}
-		new->restricted_offset = mem->restricted_offset;
+		new->restricted_offset = mem->restricted_offset >> PAGE_SHIFT;
 	}
 
 	r = kvm_set_memslot(kvm, old, new, change);

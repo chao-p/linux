@@ -2364,8 +2364,7 @@ static inline int kvm_restricted_mem_get_pfn(struct kvm_memory_slot *slot,
 					     gfn_t gfn, kvm_pfn_t *pfn,
 					     int *order)
 {
-	pgoff_t index = gfn - slot->base_gfn +
-			(slot->restricted_offset >> PAGE_SHIFT);
+	pgoff_t index = gfn - slot->base_gfn + slot->restricted_offset;
 	struct page *page;
 	int ret;
 
